@@ -7,7 +7,7 @@ edition = "2021"
 vulkano = "0.34.0"
 # 版本需与 vulkano 一致
 vulkano-shaders = "0.34.0"
-winit = "0.28.0"
+winit = "0.28.7"
 
 [profile.dev]
 opt-level = 1
