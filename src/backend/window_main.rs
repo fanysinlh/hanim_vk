@@ -33,16 +33,18 @@ use winit::window::{Window, WindowBuilder};
 use std::sync::Arc;
 use super::super::shaders::{fragment_shaders::fs, vertex_shaders::vs};
 
-
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
-struct HobjectData {
-    #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
+pub struct HobjectData {
+    #[format(R32G32B32_SFLOAT)]
+    pub position: [f32; 3],
+    #[format(R32G32B32A32_SFLOAT)]
+    pub color: [f32; 4],
 }
 
 pub struct AppData {
     pub window_size: winit::dpi::Size,
+    pub hobject_data: Vec<HobjectData>,
 }
 
 pub struct HanimApp {
@@ -148,15 +150,6 @@ impl HanimApp {
     
         // 使用默认内存分配器，等下分配给缓冲区
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let vertex1 = HobjectData {
-            position: [-0.5, -0.5],
-        };
-        let vertex2 = HobjectData {
-            position: [0.0, 0.5],
-        };
-        let vertex3 = HobjectData {
-            position: [0.5, -0.25],
-        };
         let vertex_buffer = Buffer::from_iter(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -168,10 +161,10 @@ impl HanimApp {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            vec![vertex1, vertex2, vertex3],
+            data.hobject_data,
         )
         .unwrap();
-    
+
         let vs = vs::load(device.clone()).expect("failed to create shader module");
         let fs = fs::load(device.clone()).expect("failed to create shader module");
     
