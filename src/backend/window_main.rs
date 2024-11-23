@@ -33,7 +33,7 @@ use winit::window::{Window, WindowBuilder};
 use std::sync::Arc;
 use super::super::shaders::{fragment_shaders::fs, vertex_shaders::vs};
 
-#[derive(BufferContents, Vertex)]
+#[derive(BufferContents, Vertex, Clone)]
 #[repr(C)]
 pub struct HobjectData {
     #[format(R32G32B32_SFLOAT)]
@@ -77,105 +77,19 @@ impl HanimApp {
     pub fn init(data: AppData) -> Self {
         let (event_loop, instance) = Self::event_and_instance_init();
 
-        let window = Arc::new(WindowBuilder::new()
-            .with_title("Hanim")
-            .with_inner_size(data.window_size)
-            .build(&event_loop)
-            .unwrap());
-        let surface = Surface::from_window(instance.clone(), window.clone()).unwrap();
-    
-        let device_extensions = DeviceExtensions {
-            khr_swapchain: true,
-            ..DeviceExtensions::empty()
-        };
-    
-        let (physical_device, _) = Self::select_physical_device(
-            &instance, &surface, &device_extensions);
-    
-        // 获取支持图形操作的队列族
-        let queue_family_index = physical_device
-            .queue_family_properties()
-            .iter()
-            .enumerate()
-            .position(|(_queue_family_index, queue_family_properties)| {
-                queue_family_properties.queue_flags.contains(QueueFlags::GRAPHICS)
-            })
-            .expect("couldn't find a graphical queue family") as u32;
-        
-        let (device, mut queues) = Device::new(
-            physical_device.clone(),
-            DeviceCreateInfo {
-                queue_create_infos: vec![QueueCreateInfo {
-                    queue_family_index,
-                    ..Default::default()
-                }],
-                enabled_extensions: device_extensions,
-                ..Default::default()
-            },
-        )
-        .expect("failed to create device");
-    
-        let queue = queues.next().unwrap();
-    
-        // 查询一下表面的能力
-        let caps = physical_device
-            .surface_capabilities(&surface, Default::default())
-            .expect("failed to get surface capabilities");
-    
-        // 获取图像的尺寸、透明度处理、以及图像格式（如RGB）。
-        let dimensions = window.inner_size();
-        let composite_alpha = caps.supported_composite_alpha.into_iter().next().unwrap();
-        let image_format = physical_device
-            .surface_formats(&surface, Default::default())
-            .unwrap()[0]
-            .0;
-    
-        let (swapchain, images) = Swapchain::new(
-            device.clone(),
-            surface.clone(),
-            SwapchainCreateInfo {
-                min_image_count: caps.min_image_count + 1, // 使用的交换链数量
-                // 为了更灵活的图像队列处理，最好将min_image_count设置为至少比最小值多一个。
-                image_format,
-                image_extent: dimensions.into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT,  // 图像的用途
-                composite_alpha,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    
-        let render_pass = Self::get_render_pass(device.clone(), &swapchain);
-        let frame_buffers = Self::get_framebuffers(&images, &render_pass);
-    
-        // 使用默认内存分配器，等下分配给缓冲区
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let vertex_buffer = Buffer::from_iter(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            data.hobject_data,
-        )
-        .unwrap();
+        let (window, surface) = 
+            Self::window_and_service_init(&data, &event_loop, &instance);
 
-        let vs = vs::load(device.clone()).expect("failed to create shader module");
-        let fs = fs::load(device.clone()).expect("failed to create shader module");
-    
-        let viewport = Viewport {
-            // 视口从窗口左下角开始，偏移量为0
-            offset: [0.0, 0.0],
-            // 指定视口的宽度和高度
-            extent: window.inner_size().into(),
-            // 视口的深度范围（由近到远），近平面为0，原平面为1
-            depth_range: 0.0..=1.0,
-        };
+        let (physical_device, device, queue) = 
+            Self::device_and_queue_init(&instance, &surface);
+
+        let (swapchain, images) = 
+            Self::swachain_and_images_init(&window, &device, &surface, &physical_device);
+
+        let (render_pass, vertex_buffer, vs, fs, viewport) = 
+            Self::vertex_buffer_and_shaders_and_viewport_init(&data, &window, &device, &swapchain);
+
+        let frame_buffers = Self::get_framebuffers(&images, &render_pass);
     
         let pipeline = Self::get_pipeline(
             device.clone(),
@@ -244,6 +158,134 @@ impl HanimApp {
             })
             .expect("failed to create instance");
         (event_loop, instance)
+    }
+
+    fn window_and_service_init(data: &AppData, event_loop: &EventLoop<()>, instance: &Arc<Instance>)
+        -> (Arc<Window>, Arc<Surface>) {
+        let window = Arc::new(WindowBuilder::new()
+            .with_title("Hanim")
+            .with_inner_size(data.window_size)
+            .build(&event_loop)
+            .unwrap());
+        let surface = Surface::from_window(instance.clone(), window.clone()).unwrap();
+
+        (window, surface)
+    }
+
+    fn device_and_queue_init(instance: &Arc<Instance>, surface: &Arc<Surface>)
+        -> (Arc<PhysicalDevice>, Arc<Device>, Arc<Queue>) {
+        let device_extensions = DeviceExtensions {
+            khr_swapchain: true,
+            ..DeviceExtensions::empty()
+        };
+    
+        let (physical_device, _) = Self::select_physical_device(
+            &instance, &surface, &device_extensions);
+    
+        // 获取支持图形操作的队列族
+        let queue_family_index = physical_device
+            .queue_family_properties()
+            .iter()
+            .enumerate()
+            .position(|(_queue_family_index, queue_family_properties)| {
+                queue_family_properties.queue_flags.contains(QueueFlags::GRAPHICS)
+            })
+            .expect("couldn't find a graphical queue family") as u32;
+        
+        let (device, mut queues) = Device::new(
+            physical_device.clone(),
+            DeviceCreateInfo {
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
+                enabled_extensions: device_extensions,
+                ..Default::default()
+            },
+        )
+        .expect("failed to create device");
+    
+        let queue = queues.next().unwrap();
+
+        (physical_device, device, queue)
+    }
+
+    fn swachain_and_images_init(
+        window: &Arc<Window>,
+        device: &Arc<Device>,
+        surface: &Arc<Surface>,
+        physical_device: &Arc<PhysicalDevice>,
+    ) -> (Arc<Swapchain>, Vec<Arc<Image>>) {
+        // 查询一下表面的能力
+        let caps = physical_device
+            .surface_capabilities(&surface, Default::default())
+            .expect("failed to get surface capabilities");
+    
+        // 获取图像的尺寸、透明度处理、以及图像格式（如RGB）。
+        let dimensions = window.inner_size();
+        let composite_alpha = caps.supported_composite_alpha.into_iter().next().unwrap();
+        let image_format = physical_device
+            .surface_formats(&surface, Default::default())
+            .unwrap()[0]
+            .0;
+    
+        let (swapchain, images) = Swapchain::new(
+            device.clone(),
+            surface.clone(),
+            SwapchainCreateInfo {
+                min_image_count: caps.min_image_count + 1, // 使用的交换链数量
+                // 为了更灵活的图像队列处理，最好将min_image_count设置为至少比最小值多一个。
+                image_format,
+                image_extent: dimensions.into(),
+                image_usage: ImageUsage::COLOR_ATTACHMENT,  // 图像的用途
+                composite_alpha,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        (swapchain, images)
+    }
+
+    fn vertex_buffer_and_shaders_and_viewport_init(
+        data: &AppData,
+        window: &Arc<Window>,
+        device: &Arc<Device>,
+        swapchain: &Arc<Swapchain>,
+    ) -> (Arc<RenderPass>, Subbuffer<[HobjectData]>, Arc<ShaderModule>, Arc<ShaderModule>, Viewport) {
+        let render_pass = Self::get_render_pass(device.clone(), &swapchain);
+    
+        // 使用默认内存分配器，等下分配给缓冲区
+        let memory_allocator = 
+            Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let vertex_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data.hobject_data.clone(),
+        )
+        .unwrap();
+
+        let vs = vs::load(device.clone()).expect("failed to create shader module");
+        let fs = fs::load(device.clone()).expect("failed to create shader module");
+    
+        let viewport = Viewport {
+            // 视口从窗口左下角开始，偏移量为0
+            offset: [0.0, 0.0],
+            // 指定视口的宽度和高度
+            extent: window.inner_size().into(),
+            // 视口的深度范围（由近到远），近平面为0，原平面为1
+            depth_range: 0.0..=1.0,
+        };
+
+        (render_pass, vertex_buffer, vs, fs, viewport)
     }
 
     fn select_physical_device(
